@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gpu-redis-aggregator
-  namespace: default
+  namespace: gpu-mig-monitoring
 spec:
   replicas: 1
   selector:
@@ -14,13 +14,16 @@ spec:
         app: gpu-redis-aggregator
     spec:
       serviceAccountName: gpu-redis-aggregator
-      nodeSelector:
-        kubernetes.io/hostname: k8s-master
+
+      # 如果你的 ghcr 镜像仓库是私有的，取消下面两行注释
+      # imagePullSecrets:
+      #   - name: ghcr-creds
+
       containers:
         - name: gpu-redis-aggregator
-          image: busybox:1.36
+          image: ghcr.io/lsjzxf/gpu-redis-aggregator/gpu-redis-aggregator:sha-c2e216d
           imagePullPolicy: IfNotPresent
-          command: ["/app/gpu-redis-aggregator"]
+
           env:
             - name: REDIS_ADDR
               value: "redis.gpu-insight-cache.svc.cluster.local:6379"
@@ -30,14 +33,21 @@ spec:
               value: "gpuinsight:v1"
             - name: CACHE_TTL
               value: "30s"
+
           ports:
-            - containerPort: 8080
-          volumeMounts:
-            - name: app-binary
-              mountPath: /app/gpu-redis-aggregator
-              readOnly: true
-      volumes:
-        - name: app-binary
-          hostPath:
-            path: /home/lsj/gpu-redis-aggregator/gpu-redis-aggregator
-            type: File
+            - name: http
+              containerPort: 8080
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10

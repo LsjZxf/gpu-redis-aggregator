@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: gpu-redis-aggregator
-  namespace: default
+  namespace: gpu-mig-monitoring
 spec:
   selector:
     app: gpu-redis-aggregator
