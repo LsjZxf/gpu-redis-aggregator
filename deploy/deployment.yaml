@@ -32,7 +32,7 @@ spec:
             - name: REDIS_PREFIX
               value: "gpuinsight:v1"
             - name: CACHE_TTL
-              value: "30s"
+              value: "10s"
 
           ports:
             - name: http
