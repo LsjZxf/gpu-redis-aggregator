@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-redis-aggregator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-redis-aggregator
+  template:
+    metadata:
+      labels:
+        app: gpu-redis-aggregator
+    spec:
+      serviceAccountName: gpu-redis-aggregator
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+        - name: gpu-redis-aggregator
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command: ["/app/gpu-redis-aggregator"]
+          env:
+            - name: REDIS_ADDR
+              value: "redis.gpu-insight-cache.svc.cluster.local:6379"
+            - name: REDIS_DB
+              value: "0"
+            - name: REDIS_PREFIX
+              value: "gpuinsight:v1"
+            - name: CACHE_TTL
+              value: "30s"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: app-binary
+              mountPath: /app/gpu-redis-aggregator
+              readOnly: true
+      volumes:
+        - name: app-binary
+          hostPath:
+            path: /home/lsj/gpu-redis-aggregator/gpu-redis-aggregator
+            type: File
