@@ -79,15 +79,15 @@ type GPUMeta struct {
 }
 
 type NodeReport struct {
-	ServerName          string   `json:"server_name"`
-	GPUModel            string   `json:"gpu_model"`
-	MIGSupported        bool     `json:"mig_supported"`
-	MIGEnabled          bool     `json:"mig_enabled"`
-	MIGProfiles         []string `json:"mig_profiles"`
-	RunningProcessCount int      `json:"running_process_count"`
-	HasRunningPrograms  bool     `json:"has_running_programs"`
-	RunningPrograms     []string `json:"running_programs"`
-	ActivePods          []string `json:"active_pods,omitempty"`
+	ServerName          string                 `json:"server_name"`
+	GPUModel            string                 `json:"gpu_model"`
+	MIGSupported        bool                   `json:"mig_supported"`
+	MIGEnabled          bool                   `json:"mig_enabled"`
+	MIGProfiles         []AllowedGeometryGroup `json:"mig_profiles"`
+	RunningProcessCount int                    `json:"running_process_count"`
+	HasRunningPrograms  bool                   `json:"has_running_programs"`
+	RunningPrograms     []string               `json:"running_programs"`
+	ActivePods          []string               `json:"active_pods,omitempty"`
 }
 
 type Report struct {
@@ -109,14 +109,14 @@ type KnownMigGeometry struct {
 }
 
 type AllowedGeometryGroup struct {
-	Group      string         `yaml:"group"`
-	Geometries []GeometryItem `yaml:"geometries"`
+	Group      string         `yaml:"group" json:"group"`
+	Geometries []GeometryItem `yaml:"geometries" json:"geometries"`
 }
 
 type GeometryItem struct {
-	Name   string `yaml:"name"`
-	Memory int    `yaml:"memory"`
-	Count  int    `yaml:"count"`
+	Name   string `yaml:"name" json:"name"`
+	Memory int    `yaml:"memory" json:"memory"`
+	Count  int    `yaml:"count" json:"count"`
 }
 
 type VolcanoNodeConfig struct {
@@ -225,7 +225,7 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 			GPUModel:            "",
 			MIGSupported:        false,
 			MIGEnabled:          false,
-			MIGProfiles:         []string{},
+			MIGProfiles:         []AllowedGeometryGroup{},
 			RunningProcessCount: 0,
 			HasRunningPrograms:  false,
 			RunningPrograms:     []string{},
@@ -252,7 +252,7 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 	if err != nil {
 		log.Printf("load volcano MIG config failed: %v", err)
 	} else {
-		log.Printf("loaded volcano MIG config models: %v", keysOfMap(volcanoMigMap))
+		log.Printf("loaded volcano MIG config models: %v", keysOfMigMap(volcanoMigMap))
 	}
 
 	volcanoNodeMigState, err := s.loadVolcanoNodeMIGState(ctx)
@@ -267,7 +267,7 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 		if _, ok := results[nodeName]; !ok {
 			results[nodeName] = &NodeReport{
 				ServerName:      nodeName,
-				MIGProfiles:     []string{},
+				MIGProfiles:     []AllowedGeometryGroup{},
 				RunningPrograms: []string{},
 				ActivePods:      []string{},
 			}
@@ -278,13 +278,13 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 		rep.GPUModel = strings.Join(models, ", ")
 
 		rep.MIGSupported = false
-		rep.MIGProfiles = []string{}
+		rep.MIGProfiles = []AllowedGeometryGroup{}
 
 		// 只有单一模型时，才按该模型匹配 MIG 模板
 		if len(models) == 1 {
 			if profiles, ok := matchModelToProfiles(models[0], volcanoMigMap); ok {
 				rep.MIGSupported = true
-				rep.MIGProfiles = uniqueSorted(profiles)
+				rep.MIGProfiles = cloneAllowedGeometryGroups(profiles)
 			}
 		}
 
@@ -306,7 +306,7 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 		if _, ok := results[pod.Node]; !ok {
 			results[pod.Node] = &NodeReport{
 				ServerName:      pod.Node,
-				MIGProfiles:     []string{},
+				MIGProfiles:     []AllowedGeometryGroup{},
 				RunningPrograms: []string{},
 				ActivePods:      []string{},
 			}
@@ -326,7 +326,6 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 	out := make([]NodeReport, 0, len(results))
 	for _, n := range nodeNames {
 		rep := results[n]
-		rep.MIGProfiles = uniqueSorted(rep.MIGProfiles)
 		rep.ActivePods = uniqueSorted(rep.ActivePods)
 		if rep.RunningProcessCount == 0 {
 			rep.HasRunningPrograms = false
@@ -337,7 +336,6 @@ func (s *Server) buildReport(ctx context.Context) (Report, error) {
 	// Redis 里如果出现 K8s 节点列表之外的节点，也补进去
 	for name, rep := range results {
 		if !contains(nodeNames, name) {
-			rep.MIGProfiles = uniqueSorted(rep.MIGProfiles)
 			rep.ActivePods = uniqueSorted(rep.ActivePods)
 			out = append(out, *rep)
 		}
@@ -366,10 +364,10 @@ func (s *Server) listK8sNodes(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
-func (s *Server) loadVolcanoMIGConfig(ctx context.Context) (map[string][]string, error) {
-	out := map[string][]string{}
+func (s *Server) loadVolcanoMIGConfig(ctx context.Context) (map[string][]AllowedGeometryGroup, error) {
+	out := map[string][]AllowedGeometryGroup{}
 
-	cm, err := s.k8s.CoreV1().ConfigMaps("kube-system").Get(ctx, "volcano-vgpu-device-config", metav1.GetOptions{}) //寻找关于能够使用mig的设备信息，以及能够完成mig切分的信息
+	cm, err := s.k8s.CoreV1().ConfigMaps("kube-system").Get(ctx, "volcano-vgpu-device-config", metav1.GetOptions{})
 	if err != nil {
 		return out, fmt.Errorf("get configmap volcano-vgpu-device-config failed: %w", err)
 	}
@@ -385,18 +383,20 @@ func (s *Server) loadVolcanoMIGConfig(ctx context.Context) (map[string][]string,
 	}
 
 	for _, item := range cfg.Nvidia.KnownMigGeometries {
-		profiles := []string{}
+		groups := make([]AllowedGeometryGroup, 0, len(item.AllowedGeometries))
 		for _, g := range item.AllowedGeometries {
-			for _, geo := range g.Geometries {
-				profiles = append(profiles, geo.Name)
+			group := AllowedGeometryGroup{
+				Group:      g.Group,
+				Geometries: make([]GeometryItem, 0, len(g.Geometries)),
 			}
+			group.Geometries = append(group.Geometries, g.Geometries...)
+			groups = append(groups, group)
 		}
-		profiles = uniqueSorted(profiles)
 
 		for _, model := range item.Models {
 			nm := normalizeModel(model)
 			if nm != "" {
-				out[nm] = profiles
+				out[nm] = groups
 			}
 		}
 	}
@@ -648,25 +648,38 @@ func normalizeModel(s string) string {
 	return s
 }
 
-func matchModelToProfiles(model string, migMap map[string][]string) ([]string, bool) {
+func matchModelToProfiles(model string, migMap map[string][]AllowedGeometryGroup) ([]AllowedGeometryGroup, bool) {
 	nm := normalizeModel(model)
 	if nm == "" {
 		return nil, false
 	}
 
 	if profiles, ok := migMap[nm]; ok {
-		return profiles, true
+		return cloneAllowedGeometryGroups(profiles), true
 	}
 
 	for knownModel, profiles := range migMap {
 		if nm == knownModel ||
 			strings.Contains(nm, knownModel) ||
 			strings.Contains(knownModel, nm) {
-			return profiles, true
+			return cloneAllowedGeometryGroups(profiles), true
 		}
 	}
 
 	return nil, false
+}
+
+func cloneAllowedGeometryGroups(in []AllowedGeometryGroup) []AllowedGeometryGroup {
+	out := make([]AllowedGeometryGroup, 0, len(in))
+	for _, g := range in {
+		item := AllowedGeometryGroup{
+			Group:      g.Group,
+			Geometries: make([]GeometryItem, 0, len(g.Geometries)),
+		}
+		item.Geometries = append(item.Geometries, g.Geometries...)
+		out = append(out, item)
+	}
+	return out
 }
 
 func isMIGPod(migID, migProfile, migKey, primaryDev string) bool {
@@ -701,7 +714,7 @@ func uniqueSorted(in []string) []string {
 	return out
 }
 
-func keysOfMap(m map[string][]string) []string {
+func keysOfMigMap(m map[string][]AllowedGeometryGroup) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
